@@ -33,11 +33,13 @@ use OCA\Richdocuments\Helper;
 use OCA\Richdocuments\PermissionManager;
 use OCA\Richdocuments\Service\FederationService;
 use OCA\Richdocuments\Service\UserScopeService;
+use OCA\Richdocuments\Service\WatermarkService;
 use OCA\Richdocuments\TemplateManager;
 use OCA\Richdocuments\TokenManager;
 use OCP\AppFramework\Controller;
-use OCP\AppFramework\Db\DoesNotExistException;
 use OCP\AppFramework\Http;
+use OCP\AppFramework\Http\Attribute\NoCSRFRequired;
+use OCP\AppFramework\Http\Attribute\PublicPage;
 use OCP\AppFramework\Http\JSONResponse;
 use OCP\AppFramework\Http\StreamResponse;
 use OCP\AppFramework\QueryException;
@@ -47,7 +49,6 @@ use OCP\EventDispatcher\IEventDispatcher;
 use OCP\Files\File;
 use OCP\Files\Folder;
 use OCP\Files\GenericFileException;
-use OCP\Files\InvalidPathException;
 use OCP\Files\IRootFolder;
 use OCP\Files\Lock\ILock;
 use OCP\Files\Lock\ILockManager;
@@ -56,7 +57,6 @@ use OCP\Files\Lock\NoLockProviderException;
 use OCP\Files\Lock\OwnerLockedException;
 use OCP\Files\Node;
 use OCP\Files\NotFoundException;
-use OCP\Files\NotPermittedException;
 use OCP\IConfig;
 use OCP\IGroupManager;
 use OCP\IRequest;
@@ -72,99 +72,45 @@ use Psr\Container\NotFoundExceptionInterface;
 use Psr\Log\LoggerInterface;
 
 class WopiController extends Controller {
-	/** @var IRootFolder */
-	private $rootFolder;
-	/** @var IURLGenerator */
-	private $urlGenerator;
-	/** @var IConfig */
-	private $config;
-	/** @var AppConfig */
-	private $appConfig;
-	/** @var TokenManager */
-	private $tokenManager;
-	/** @var PermissionManager */
-	private $permissionManager;
-	/** @var IUserManager */
-	private $userManager;
-	/** @var WopiMapper */
-	private $wopiMapper;
-	/** @var LoggerInterface */
-	private $logger;
-	/** @var TemplateManager */
-	private $templateManager;
-	/** @var IShareManager */
-	private $shareManager;
-	/** @var UserScopeService */
-	private $userScopeService;
-	/** @var FederationService */
-	private $federationService;
-	/** @var IEncryptionManager */
-	private $encryptionManager;
-	/** @var IGroupManager */
-	private $groupManager;
-	private ILockManager $lockManager;
-	private IEventDispatcher $eventDispatcher;
-
 	// Signifies LOOL that document has been changed externally in this storage
 	public const LOOL_STATUS_DOC_CHANGED = 1010;
 
 	public const WOPI_AVATAR_SIZE = 64;
 
 	public function __construct(
-		$appName,
+		string $appName,
 		IRequest $request,
-		IRootFolder $rootFolder,
-		IURLGenerator $urlGenerator,
-		IConfig $config,
-		AppConfig $appConfig,
-		TokenManager $tokenManager,
-		PermissionManager $permissionManager,
-		IUserManager $userManager,
-		WopiMapper $wopiMapper,
-		LoggerInterface $logger,
-		TemplateManager $templateManager,
-		IShareManager $shareManager,
-		UserScopeService $userScopeService,
-		FederationService $federationService,
-		IEncryptionManager $encryptionManager,
-		IGroupManager $groupManager,
-		ILockManager $lockManager,
-		IEventDispatcher $eventDispatcher
+		private IRootFolder $rootFolder,
+		private IURLGenerator $urlGenerator,
+		private IConfig $config,
+		private AppConfig $appConfig,
+		private TokenManager $tokenManager,
+		private PermissionManager $permissionManager,
+		private IUserManager $userManager,
+		private WopiMapper $wopiMapper,
+		private LoggerInterface $logger,
+		private TemplateManager $templateManager,
+		private IShareManager $shareManager,
+		private UserScopeService $userScopeService,
+		private FederationService $federationService,
+		private IEncryptionManager $encryptionManager,
+		private IGroupManager $groupManager,
+		private ILockManager $lockManager,
+		private IEventDispatcher $eventDispatcher,
+		private WatermarkService $watermarkService
 	) {
 		parent::__construct($appName, $request);
-		$this->rootFolder = $rootFolder;
-		$this->urlGenerator = $urlGenerator;
-		$this->config = $config;
-		$this->appConfig = $appConfig;
-		$this->tokenManager = $tokenManager;
-		$this->permissionManager = $permissionManager;
-		$this->userManager = $userManager;
-		$this->wopiMapper = $wopiMapper;
-		$this->logger = $logger;
-		$this->templateManager = $templateManager;
-		$this->shareManager = $shareManager;
-		$this->userScopeService = $userScopeService;
-		$this->federationService = $federationService;
-		$this->encryptionManager = $encryptionManager;
-		$this->groupManager = $groupManager;
-		$this->lockManager = $lockManager;
-		$this->eventDispatcher = $eventDispatcher;
 	}
 
 	/**
-	 * Returns general info about a file.
+	 * WOPI CheckFileInfo
 	 *
-	 * @NoAdminRequired
-	 * @NoCSRFRequired
-	 * @PublicPage
-	 *
-	 * @param string $fileId
-	 * @param string $access_token
-	 * @return JSONResponse
-	 * @throws InvalidPathException
-	 * @throws NotFoundException
+	 * The CheckFileInfo operation returns information about a file, a user's permissions on that file,
+	 * and general information about the capabilities that the WOPI host has on the file.
 	 */
-	public function checkFileInfo($fileId, $access_token) {
+	#[NoCSRFRequired]
+	#[PublicPage]
+	public function checkFileInfo(string $fileId, string $access_token): JSONResponse {
 		try {
 			list($fileId, , $version) = Helper::parseFileId($fileId);
 
@@ -192,10 +138,9 @@ class WopiController extends Controller {
 			return new JSONResponse([], Http::STATUS_FORBIDDEN);
 		}
 
-		$isPublic = empty($wopi->getEditorUid());
 		$guestUserId = 'Guest-' . \OC::$server->getSecureRandom()->generate(8);
 		$user = $this->userManager->get($wopi->getEditorUid());
-		$userDisplayName = $user !== null && !$isPublic ? $user->getDisplayName() : $wopi->getGuestDisplayname();
+		$userDisplayName = $user !== null && !$wopi->isGuest() ? $user->getDisplayName() : $wopi->getGuestDisplayname();
 		$isVersion = $version !== '0';
 
 		// If the file is locked manually by a user we want to open it read only for all others
@@ -210,7 +155,7 @@ class WopiController extends Controller {
 			'BaseFileName' => $file->getName(),
 			'Size' => $file->getSize(),
 			'Version' => $version,
-			'UserId' => !$isPublic ? $wopi->getEditorUid() : $guestUserId,
+			'UserId' => !empty($wopi->getEditorUid()) ? $wopi->getEditorUid() : $guestUserId,
 			'OwnerId' => $wopi->getOwnerUid(),
 			'UserFriendlyName' => $userDisplayName,
 			'UserExtraInfo' => [],
@@ -220,20 +165,24 @@ class WopiController extends Controller {
 			'PostMessageOrigin' => $wopi->getServerHost(),
 			'LastModifiedTime' => Helper::toISO8601($file->getMTime()),
 			'SupportsRename' => !$isVersion,
-			'UserCanRename' => !$isPublic && !$isVersion,
+			'UserCanRename' => !$wopi->isGuest() && !$isVersion,
 			'EnableInsertRemoteImage' => !$isPublic,
 			'EnableShare' => $file->isShareable() && !$isVersion && !$isPublic,
-			'HideUserList' => '',
-			'DisablePrint' => $wopi->getHideDownload(),
-			'DisableExport' => $wopi->getHideDownload(),
-			'DisableCopy' => $wopi->getHideDownload(),
-			'HideExportOption' => $wopi->getHideDownload(),
-			'HidePrintOption' => $wopi->getHideDownload(),
 			'DownloadAsPostMessage' => $wopi->getDirect(),
 			'SupportsLocks' => $this->lockManager->isLockProviderAvailable(),
 			'IsUserLocked' => $this->permissionManager->userIsFeatureLocked($wopi->getEditorUid()),
 			'EnableRemoteLinkPicker' => (bool)$wopi->getCanwrite() && !$isPublic && !$wopi->getDirect(),
+			'HideUserList' => '',
 		];
+		$response = array_merge(
+			$response,
+			// TODO: Once PHP is >= 8.1 we can use array unpacking with string-keyed arrays
+			$this->templateManager->getWopiParams($wopi),
+			$this->watermarkService->getWopiParams($wopi),
+			$this->checkFileInfoUserExtraInfo($wopi),
+			$this->setFederationFileInfo($wopi),
+			$this->checkFileInfoHideDownload($wopi),
+		);
 
 		$enableZotero = $this->config->getAppValue(Application::APPNAME, 'zoteroEnabled', 'yes') === 'yes';
 		if (!$isPublic && $enableZotero) {
@@ -251,22 +200,6 @@ class WopiController extends Controller {
 			$response['TemplateSaveAs'] = $file->getName();
 		}
 
-		$share = $this->getShareForWopiToken($wopi);
-		if ($this->permissionManager->shouldWatermark($file, $wopi->getEditorUid(), $share)) {
-			$email = $user !== null && !$isPublic ? $user->getEMailAddress() : "";
-			$replacements = [
-				'userId' => $wopi->getEditorUid(),
-				'date' => (new \DateTime())->format('Y-m-d H:i:s'),
-				'themingName' => \OC::$server->getThemingDefaults()->getName(),
-				'userDisplayName' => $userDisplayName,
-				'email' => $email,
-			];
-			$watermarkTemplate = $this->appConfig->getAppValue('watermark_text');
-			$response['WatermarkText'] = preg_replace_callback('/{(.+?)}/', function ($matches) use ($replacements) {
-				return $replacements[$matches[1]];
-			}, $watermarkTemplate);
-		}
-
 		$user = $this->userManager->get($wopi->getEditorUid());
 		if ($user !== null) {
 			$response['UserExtraInfo']['avatar'] = $this->urlGenerator->linkToRouteAbsolute('core.avatar.getAvatar', ['userId' => $wopi->getEditorUid(), 'size' => self::WOPI_AVATAR_SIZE]);
@@ -280,6 +213,7 @@ class WopiController extends Controller {
 		if ($isPublic) {
 			$response['UserExtraInfo']['is_guest'] = true;
 		}
+		// ---
 
 		if ($wopi->isRemoteToken()) {
 			$response = $this->setFederationFileInfo($wopi, $response);
@@ -295,10 +229,31 @@ class WopiController extends Controller {
 		return new JSONResponse($response);
 	}
 
+	private function checkFileInfoUserExtraInfo(Wopi $wopi): array {
+		$user = $this->userManager->get($wopi->getEditorUid());
 
-	private function setFederationFileInfo(Wopi $wopi, $response) {
+		if($user === null) {
+			return [
+				'UserExtraInfo' => [
+					'avatar' => $this->urlGenerator->linkToRouteAbsolute('core.GuestAvatar.getAvatar', ['guestName' => urlencode($wopi->getGuestDisplayname()), 'size' => self::WOPI_AVATAR_SIZE])
+				]
+			];
+		}
+
+		return [
+			'UserExtraInfo' => [
+				'avatar' => $this->urlGenerator->linkToRouteAbsolute('core.avatar.getAvatar', ['userId' => $wopi->getEditorUid(), 'size' => self::WOPI_AVATAR_SIZE]),
+				'is_admin' => $this->groupManager->isAdmin($wopi->getEditorUid()),
+			]
+		];
+	}
+
+	private function setFederationFileInfo(Wopi $wopi): array {
+		if (!$wopi->isRemoteToken()) {
+			return [];
+		}
+		$response = [];
 		$response['UserId'] = 'Guest-' . \OC::$server->getSecureRandom()->generate(8);
-
 		if ($wopi->getTokenType() === Wopi::TOKEN_TYPE_REMOTE_USER) {
 			$remoteUserId = $wopi->getGuestDisplayname();
 			$cloudID = \OC::$server->getCloudIdManager()->resolveCloudId($remoteUserId);
@@ -336,20 +291,22 @@ class WopiController extends Controller {
 		return $response;
 	}
 
+	private function checkFileInfoHideDownload(Wopi $wopi): array {
+		return [
+			'DisablePrint' => $wopi->getHideDownload(),
+			'DisableExport' => $wopi->getHideDownload(),
+			'DisableCopy' => $wopi->getHideDownload(),
+			'HideExportOption' => $wopi->getHideDownload(),
+			'HidePrintOption' => $wopi->getHideDownload(),
+		];
+	}
+
 	/**
-	 * Given an access token and a fileId, returns the contents of the file.
-	 * Expects a valid token in access_token parameter.
-	 *
-	 * @PublicPage
-	 * @NoCSRFRequired
-	 *
-	 * @param string $fileId
-	 * @param string $access_token
-	 * @return Http\Response
-	 * @throws NotFoundException
-	 * @throws NotPermittedException
-	 * @throws LockedException
+	 * WOPI GetFile
+	 * The GetFile operation retrieves a file from a host.
 	 */
+	#[PublicPage]
+	#[NoCSRFRequired]
 	public function getFile($fileId,
 		$access_token) {
 		list($fileId, , $version) = Helper::parseFileId($fileId);
@@ -413,18 +370,12 @@ class WopiController extends Controller {
 	}
 
 	/**
-	 * Given an access token and a fileId, replaces the files with the request body.
-	 * Expects a valid token in access_token parameter.
-	 *
-	 * @PublicPage
-	 * @NoCSRFRequired
-	 *
-	 * @param string $fileId
-	 * @param string $access_token
-	 * @return JSONResponse
+	 * WOPI PutFile
+	 * The PutFile operation updates a file’s binary contents.
 	 */
-	public function putFile($fileId,
-		$access_token) {
+	#[PublicPage]
+	#[NoCSRFRequired]
+	public function putFile(string $fileId, string $access_token): JSONResponse {
 		list($fileId, , ) = Helper::parseFileId($fileId);
 		$isPutRelative = ($this->request->getHeader('X-WOPI-Override') === 'PUT_RELATIVE');
 
@@ -546,15 +497,9 @@ class WopiController extends Controller {
 	 * handles both saving and saving as.* Given an access token and a fileId, replaces the files with the request body.
 	 *
 	 * FIXME Cleanup this code as is a lot of shared logic between putFile and putRelativeFile
-	 *
-	 * @PublicPage
-	 * @NoCSRFRequired
-	 *
-	 * @param string $fileId
-	 * @param string $access_token
-	 * @return JSONResponse
-	 * @throws DoesNotExistException
 	 */
+	#[PublicPage]
+	#[NoCSRFRequired]
 	public function postFile(string $fileId, string $access_token): JSONResponse {
 		try {
 			$wopiOverride = $this->request->getHeader('X-WOPI-Override');
@@ -865,34 +810,27 @@ class WopiController extends Controller {
 
 	/**
 	 * Endpoint to return the template file that is requested by collabora to create a new document
-	 *
-	 * @PublicPage
-	 * @NoCSRFRequired
-	 *
-	 * @param $fileId
-	 * @param $access_token
-	 * @return JSONResponse|StreamResponse
 	 */
-	public function getTemplate($fileId, $access_token) {
+	#[PublicPage]
+	#[NoCSRFRequired]
+	public function getTemplate(string $fileId, string $access_token): JSONResponse|StreamResponse {
 		try {
 			$wopi = $this->wopiMapper->getWopiForToken($access_token);
-		} catch (UnknownTokenException $e) {
-			return new JSONResponse([], Http::STATUS_FORBIDDEN);
-		} catch (ExpiredTokenException $e) {
-			return new JSONResponse([], Http::STATUS_UNAUTHORIZED);
-		}
 
-		if ((int)$fileId !== $wopi->getTemplateId()) {
-			return new JSONResponse([], Http::STATUS_FORBIDDEN);
-		}
+			if ((int)$fileId !== $wopi->getTemplateId()) {
+				return new JSONResponse([], Http::STATUS_FORBIDDEN);
+			}
 
-		try {
 			$this->templateManager->setUserId($wopi->getOwnerUid());
 			$file = $this->templateManager->get($wopi->getTemplateId());
 			$response = new StreamResponse($file->fopen('rb'));
 			$response->addHeader('Content-Disposition', 'attachment');
 			$response->addHeader('Content-Type', 'application/octet-stream');
 			return $response;
+		} catch (UnknownTokenException $e) {
+			return new JSONResponse([], Http::STATUS_FORBIDDEN);
+		} catch (ExpiredTokenException $e) {
+			return new JSONResponse([], Http::STATUS_UNAUTHORIZED);
 		} catch (\Exception $e) {
 			$this->logger->error('getTemplate failed: ' . $e->getMessage(), ['exception' => $e]);
 			return new JSONResponse([], Http::STATUS_INTERNAL_SERVER_ERROR);
