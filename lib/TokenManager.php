@@ -224,7 +224,7 @@ class TokenManager {
 		$wopi = $this->wopiMapper->generateFileToken($fileId, $owneruid, $editoruid, $version, $updatable, $serverHost, $guestName, 0, $hideDownload, $direct, 0, $shareToken);
 
 		return [
-			$this->wopiParser->getUrlSrc($file->getMimeType())['urlsrc'], // url src might not be found ehre
+			$this->wopiParser->getUrlSrcForFile($file, $updatable),
 			$wopi->getToken(),
 			$wopi
 		];
@@ -308,7 +308,7 @@ class TokenManager {
 		}
 
 		return [
-			$this->wopiParser->getUrlSrc($templateFile->getMimeType())['urlsrc'],
+			$this->wopiParser->getUrlSrcForFile($targetFile),
 			$wopi
 		];
 	}
