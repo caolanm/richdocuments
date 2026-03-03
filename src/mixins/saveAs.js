@@ -23,6 +23,7 @@ export default {
 						this.lastSaveAsFilename = basename(value)
 						this.sendPostMessage('Action_SaveAs', { Filename: value, Notify: true })
 					}
+					this.sendPostMessage('Grab_Focus')
 				},
 			)
 		},

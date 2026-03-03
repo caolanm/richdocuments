@@ -477,7 +477,12 @@ const documentsMain = {
 								path: documentsMain.fileName,
 								format: args.format,
 							},
-							(value) => value && PostMessages.sendWOPIPostMessage('loolframe', 'Action_SaveAs', { Filename: value, Notify: true }),
+							(value) => {
+								if (value) {
+									PostMessages.sendWOPIPostMessage('loolframe', 'Action_SaveAs', { Filename: value, Notify: true })
+								}
+								PostMessages.sendWOPIPostMessage('loolframe', 'Grab_Focus')
+							},
 						)
 					} else if (msgId === 'Action_Save_Resp') {
 						if (args.success && args.fileName) {
